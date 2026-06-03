@@ -1,8 +1,20 @@
 import os
 import logging
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    CommandHandler,
+    CallbackQueryHandler,
+    filters,
+)
 from config import TELEGRAM_BOT_TOKEN, LOG_DIR, LOG_FILE
-from handlers import start_handler, reset_handler, message_handler, error_handler
+from handlers import (
+    start_handler,
+    reset_handler,
+    message_handler,
+    faq_callback_handler,
+    error_handler,
+)
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -26,6 +38,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("reset", reset_handler))
+    app.add_handler(CallbackQueryHandler(faq_callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_error_handler(error_handler)
 
