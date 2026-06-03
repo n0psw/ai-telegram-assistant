@@ -9,4 +9,4 @@ venv/
 *.egg-info/
 dist/
 build/
-readme.md
+*.md
