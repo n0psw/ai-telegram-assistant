@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -19,12 +20,12 @@ chat_logger.setLevel(logging.INFO)
 WELCOME_TEXT = (
     "Здравствуйте! 👋\n\n"
     "Я — AI-ассистент компании «Центр Красок #1».\n\n"
-    "Вы можете задать мне любой вопрос:\n"
-    "🎨 О продукции и брендах\n"
-    "🏪 О наших салонах и контактах\n"
-    "🚚 О доставке и оплате\n"
-    "🤝 О сотрудничестве\n\n"
-    "Или выберите вопрос из списка ниже 👇"
+    "Спросите меня о:\n"
+    "🎨 Продукции и брендах\n"
+    "🏪 Салонах и контактах\n"
+    "🚚 Доставке и оплате\n"
+    "🤝 Сотрудничестве\n\n"
+    "Или выберите тему ниже 👇"
 )
 
 RATE_LIMIT_TEXT = (
@@ -56,18 +57,19 @@ FAQ_QUESTIONS = {
 }
 
 
+async def _keep_typing(chat, stop_event: asyncio.Event):
+    while not stop_event.is_set():
+        await chat.send_action("typing")
+        try:
+            await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=4)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["history"] = []
     context.user_data["greeted"] = True
     await update.message.reply_text(WELCOME_TEXT, reply_markup=FAQ_KEYBOARD)
-
-
-async def reset_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["history"] = []
-    await update.message.reply_text(
-        "🔄 Контекст диалога очищен. Задайте новый вопрос!",
-        reply_markup=FAQ_KEYBOARD,
-    )
 
 
 async def faq_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,18 +93,23 @@ async def faq_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         history = history[-(MAX_HISTORY_PAIRS * 2):]
         context.user_data["history"] = history
 
-    await query.message.chat.send_action("typing")
+    stop_event = asyncio.Event()
+    typing_task = asyncio.create_task(_keep_typing(query.message.chat, stop_event))
 
     chat_logger.info(f"USER:{user.id}:{user.username} | Q(FAQ): {user_text}")
 
-    reply = get_ai_response(history)
+    try:
+        reply = await asyncio.get_event_loop().run_in_executor(None, get_ai_response, history)
+    finally:
+        stop_event.set()
+        typing_task.cancel()
 
     chat_logger.info(f"USER:{user.id}:{user.username} | A: {reply[:200]}")
 
     history.append({"role": "assistant", "content": reply})
     context.user_data["history"] = history
 
-    await query.message.reply_text(reply)
+    await query.message.reply_text(reply, reply_markup=FAQ_KEYBOARD)
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,6 +117,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
 
     if not user_text or not user_text.strip():
+        return
+
+    if update.effective_user.is_bot:
         return
 
     if not check_rate_limit(user.id):
@@ -123,6 +133,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("greeted"):
         context.user_data["greeted"] = True
         context.user_data["history"] = []
+        await update.message.reply_text(WELCOME_TEXT, reply_markup=FAQ_KEYBOARD)
 
     history = context.user_data.get("history", [])
     history.append({"role": "user", "content": user_text})
@@ -131,11 +142,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = history[-(MAX_HISTORY_PAIRS * 2):]
         context.user_data["history"] = history
 
-    await update.message.chat.send_action("typing")
+    stop_event = asyncio.Event()
+    typing_task = asyncio.create_task(_keep_typing(update.message.chat, stop_event))
 
     chat_logger.info(f"USER:{user.id}:{user.username} | Q: {user_text}")
 
-    reply = get_ai_response(history)
+    try:
+        reply = await asyncio.get_event_loop().run_in_executor(None, get_ai_response, history)
+    finally:
+        stop_event.set()
+        typing_task.cancel()
 
     chat_logger.info(f"USER:{user.id}:{user.username} | A: {reply[:200]}")
 
@@ -144,9 +160,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if len(reply) > 4096:
         for i in range(0, len(reply), 4096):
-            await update.message.reply_text(reply[i : i + 4096])
+            await update.message.reply_text(reply[i: i + 4096])
     else:
-        await update.message.reply_text(reply)
+        await update.message.reply_text(reply, reply_markup=FAQ_KEYBOARD)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):

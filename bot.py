@@ -1,5 +1,6 @@
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -10,7 +11,6 @@ from telegram.ext import (
 from config import TELEGRAM_BOT_TOKEN, LOG_DIR, LOG_FILE
 from handlers import (
     start_handler,
-    reset_handler,
     message_handler,
     faq_callback_handler,
     error_handler,
@@ -18,26 +18,35 @@ from handlers import (
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
+rotating_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=5 * 1024 * 1024,
+    backupCount=3,
+    encoding="utf-8",
+)
+rotating_handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+)
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        rotating_handler,
     ],
 )
 logger = logging.getLogger(__name__)
 
 
-def main():
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_telegram_bot_token_here":
-        logger.error("TELEGRAM_BOT_TOKEN is not set in .env")
-        return
+async def post_init(application):
+    await application.bot.set_my_commands([])
 
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CommandHandler("reset", reset_handler))
     app.add_handler(CallbackQueryHandler(faq_callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_error_handler(error_handler)
@@ -48,3 +57,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
