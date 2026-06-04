@@ -185,16 +185,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _check_and_reset_ttl(user.id)
     _update_user_db(user)
 
-    if not context.user_data.get("greeted"):
-        context.user_data["greeted"] = True
-        database.clear_history(user.id)
+    history = database.get_history(user.id)
+    
+    # Если история пуста (например, новый пользователь или после TTL/сброса диалога), 
+    # здороваемся, прежде чем отвечать.
+    if not history and not context.user_data.get("greeted_this_session"):
+        context.user_data["greeted_this_session"] = True
         await update.message.reply_text(WELCOME_TEXT, reply_markup=FAQ_KEYBOARD)
 
     # Создаем placeholder для ответа
     bot_msg = await update.message.reply_text("⏳ Думаю...")
 
     database.add_message(user.id, "user", user_text)
-    history = database.get_history(user.id)
+    history = database.get_history(user.id) # Обновляем историю с новым сообщением
 
     # Запускаем стриминг в placeholder
     await _process_stream(history, bot_msg, user, user_text)
