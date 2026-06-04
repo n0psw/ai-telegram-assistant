@@ -64,4 +64,30 @@ def main():
 
 
 if __name__ == "__main__":
+    # --- ФЕЙКОВЫЙ ВЕБ-СЕРВЕР ДЛЯ ОБХОДА ОГРАНИЧЕНИЙ RENDER ---
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class DummyHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot is running!")
+            
+        def log_message(self, format, *args):
+            # Отключаем логирование запросов, чтобы не мусорить в консоли
+            pass
+
+    def start_dummy_server():
+        try:
+            port = int(os.environ.get("PORT", 8080))
+            server = HTTPServer(("0.0.0.0", port), DummyHandler)
+            server.serve_forever()
+        except Exception:
+            pass
+
+
+    threading.Thread(target=start_dummy_server, daemon=True).start()
+    # ---------------------------------------------------------
+
     main()
