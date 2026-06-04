@@ -9,5 +9,4 @@ venv/
 *.egg-info/
 dist/
 build/
-*.md
 logs/
