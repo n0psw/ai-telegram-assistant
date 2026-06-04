@@ -6,3 +6,7 @@ services:
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M

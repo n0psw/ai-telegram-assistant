@@ -9,10 +9,14 @@ from telegram.ext import (
     filters,
 )
 from config import TELEGRAM_BOT_TOKEN, LOG_DIR, LOG_FILE
+from database import init_db
 from handlers import (
     start_handler,
     message_handler,
     faq_callback_handler,
+    new_dialog_callback_handler,
+    non_text_handler,
+    stats_handler,
     error_handler,
 )
 
@@ -40,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(application):
+    init_db()
     await application.bot.set_my_commands([])
 
 
@@ -47,8 +52,11 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CallbackQueryHandler(faq_callback_handler))
+    app.add_handler(CommandHandler("stats", stats_handler))
+    app.add_handler(CallbackQueryHandler(new_dialog_callback_handler, pattern="^new_dialog$"))
+    app.add_handler(CallbackQueryHandler(faq_callback_handler, pattern="^faq_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, non_text_handler))
     app.add_error_handler(error_handler)
 
     logger.info("Bot started")
@@ -57,4 +65,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

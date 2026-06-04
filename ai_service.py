@@ -1,19 +1,18 @@
 import logging
-import time
-from openai import OpenAI
+from openai import AsyncOpenAI
 from config import OPENAI_API_KEY, OPENAI_MODEL, MAX_TOKENS, TEMPERATURE, OPENAI_TIMEOUT
 from company_knowledge import COMPANY_INFO
 
 logger = logging.getLogger(__name__)
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 SYSTEM_PROMPT = f"""Ты — AI-ассистент компании «Центр Красок #1», интернет-магазина лакокрасочных материалов в Казахстане.
 
 Твои правила:
 1. Отвечай ТОЛЬКО на основе предоставленной ниже информации о компании. Не выдумывай данные.
 2. Если вопрос не связан с компанией, красками или ремонтом — вежливо сообщи, что ты помогаешь только с вопросами о «Центр Красок #1».
-3. Отвечай на русском языке, дружелюбно и профессионально.
+3. Определяй язык пользователя и отвечай на том же языке: русский, казахский (қазақша) или английский.
 4. Если не знаешь точный ответ — скажи об этом честно и предложи обратиться по телефону +7 (777) 292-84-01 или email info@centr-krasok.kz.
 5. Будь кратким, но информативным. Используй структурированные ответы со списками, когда это уместно.
 6. При вопросах о конкретных товарах — предлагай посмотреть каталог на сайте https://centr-krasok.kz/catalog/
@@ -42,12 +41,12 @@ FALLBACK_MESSAGE = (
 )
 
 
-def get_ai_response(history: list[dict]) -> str:
+async def get_ai_response(history: list[dict]) -> str:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = client.chat.completions.create(
+            response = await client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=messages,
                 max_tokens=MAX_TOKENS,
@@ -64,7 +63,7 @@ def get_ai_response(history: list[dict]) -> str:
             wait = 2 ** attempt
             logger.error(f"OpenAI API error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
             if attempt < MAX_RETRIES - 1:
-                time.sleep(wait)
+                import asyncio
+                await asyncio.sleep(wait)
             else:
                 return FALLBACK_MESSAGE
-
