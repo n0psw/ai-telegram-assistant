@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from ai_service import get_ai_response
+from ai_service import stream_ai_response
 from middleware import check_rate_limit
 from config import MAX_HISTORY_PAIRS, MAX_MESSAGE_LENGTH, CHAT_LOG_FILE, LOG_DIR
 import database
@@ -68,19 +68,7 @@ FAQ_QUESTIONS = {
 }
 
 
-async def _keep_typing(chat, stop_event: asyncio.Event):
-    while not stop_event.is_set():
-        await chat.send_action("typing")
-        try:
-            await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=4)
-        except asyncio.TimeoutError:
-            pass
-
-
 def _check_and_reset_ttl(user_id: int):
-    # In a full implementation, we'd fetch last_seen from DB.
-    # For MVP, we can rely on context or just keep history until explicitly reset.
-    # Actually, we can fetch last_seen:
     try:
         with database.get_connection() as conn:
             cursor = conn.cursor()
@@ -97,6 +85,42 @@ def _check_and_reset_ttl(user_id: int):
 
 def _update_user_db(user):
     database.update_user(user.id, user.username or "", user.first_name or "")
+
+
+async def _process_stream(history: list[dict], message_obj, user, user_text: str):
+    """
+    Универсальная функция стриминга ответа в Telegram-сообщение.
+    """
+    chat_logger.info(f"USER:{user.id}:{user.username} | Q: {user_text}")
+
+    current_text = ""
+    last_edit_time = time.time()
+    
+    try:
+        async for chunk in stream_ai_response(history):
+            current_text += chunk
+            
+            # Обновляем сообщение в Telegram не чаще раза в секунду
+            if time.time() - last_edit_time > 1.0 and current_text.strip():
+                try:
+                    await message_obj.edit_text(current_text + " ✍️")
+                    last_edit_time = time.time()
+                except Exception:
+                    pass # Игнорируем ошибки MessageNotModified
+                    
+    except Exception as e:
+        logger.error(f"Error during stream: {e}")
+        current_text = "Извините, произошла ошибка. Попробуйте еще раз."
+
+    # Финальный апдейт с клавиатурой
+    final_text = current_text.strip() or "Ой, я не смог сформировать ответ 😔"
+    try:
+        await message_obj.edit_text(final_text, reply_markup=FAQ_KEYBOARD)
+    except Exception:
+        pass
+
+    chat_logger.info(f"USER:{user.id}:{user.username} | A: {final_text[:200]}")
+    database.add_message(user.id, "assistant", final_text)
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,36 +153,25 @@ async def faq_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     _update_user_db(user)
 
     user_text = FAQ_QUESTIONS[faq_key]
-    database.add_message(user.id, "user", user_text)
+    
+    # Отправляем вопрос юзера от его имени (так как это callback)
+    await query.message.reply_text(f"👤 *Вы:* {user_text}", parse_mode="Markdown")
+    
+    # Создаем placeholder для ответа
+    bot_msg = await query.message.reply_text("⏳ Думаю...")
 
+    database.add_message(user.id, "user", user_text)
     history = database.get_history(user.id)
 
-    stop_event = asyncio.Event()
-    typing_task = asyncio.create_task(_keep_typing(query.message.chat, stop_event))
-
-    chat_logger.info(f"USER:{user.id}:{user.username} | Q(FAQ): {user_text}")
-
-    try:
-        reply = await get_ai_response(history)
-    finally:
-        stop_event.set()
-        typing_task.cancel()
-
-    chat_logger.info(f"USER:{user.id}:{user.username} | A: {reply[:200]}")
-
-    database.add_message(user.id, "assistant", reply)
-
-    await query.message.reply_text(reply, reply_markup=FAQ_KEYBOARD)
+    # Запускаем стриминг в placeholder
+    await _process_stream(history, bot_msg, user, user_text)
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_text = update.message.text
 
-    if not user_text or not user_text.strip():
-        return
-
-    if user.is_bot:
+    if not user_text or not user_text.strip() or user.is_bot:
         return
 
     if not check_rate_limit(user.id):
@@ -177,29 +190,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         database.clear_history(user.id)
         await update.message.reply_text(WELCOME_TEXT, reply_markup=FAQ_KEYBOARD)
 
+    # Создаем placeholder для ответа
+    bot_msg = await update.message.reply_text("⏳ Думаю...")
+
     database.add_message(user.id, "user", user_text)
     history = database.get_history(user.id)
 
-    stop_event = asyncio.Event()
-    typing_task = asyncio.create_task(_keep_typing(update.message.chat, stop_event))
-
-    chat_logger.info(f"USER:{user.id}:{user.username} | Q: {user_text}")
-
-    try:
-        reply = await get_ai_response(history)
-    finally:
-        stop_event.set()
-        typing_task.cancel()
-
-    chat_logger.info(f"USER:{user.id}:{user.username} | A: {reply[:200]}")
-
-    database.add_message(user.id, "assistant", reply)
-
-    if len(reply) > 4096:
-        for i in range(0, len(reply), 4096):
-            await update.message.reply_text(reply[i: i + 4096])
-    else:
-        await update.message.reply_text(reply, reply_markup=FAQ_KEYBOARD)
+    # Запускаем стриминг в placeholder
+    await _process_stream(history, bot_msg, user, user_text)
 
 
 async def non_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,8 +205,6 @@ async def non_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stats_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # В идеале здесь должна быть проверка на ADMIN_ID, но для MVP покажем всем (или можно скрыть).
-    # Пока оставим открытой командой /stats для демонстрации.
     stats_text = database.get_stats()
     await update.message.reply_text(stats_text)
 
